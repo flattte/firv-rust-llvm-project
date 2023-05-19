@@ -1278,6 +1278,8 @@ void TargetPassConfig::addMachinePasses() {
 
   PM->add(createStackFrameLayoutAnalysisPass());
 
+  addPass(createFirvHardenPass());
+
   // Add passes that directly emit MI after all other MI passes.
   addPreEmitPass2();
 

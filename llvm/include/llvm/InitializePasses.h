@@ -129,6 +129,7 @@ void initializeExternalAAWrapperPassPass(PassRegistry&);
 void initializeFEntryInserterPass(PassRegistry&);
 void initializeFinalizeISelPass(PassRegistry&);
 void initializeFinalizeMachineBundlesPass(PassRegistry&);
+void initializeFirvHardenPass(PassRegistry&);
 void initializeFixIrreduciblePass(PassRegistry &);
 void initializeFixupStatepointCallerSavedPass(PassRegistry&);
 void initializeFlattenCFGLegacyPassPass(PassRegistry &);

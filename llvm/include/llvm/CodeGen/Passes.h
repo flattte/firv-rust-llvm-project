@@ -601,6 +601,9 @@ namespace llvm {
 
   /// Lowers KCFI operand bundles for indirect calls.
   FunctionPass *createKCFIPass();
+
+  // FirvHarden pass
+  FunctionPass *createFirvHardenPass();
 } // End llvm namespace
 
 #endif
