@@ -828,9 +828,11 @@ void Verifier::visitGlobalVariable(const GlobalVariable &GV) {
   Check(!isa<ScalableVectorType>(GV.getValueType()),
         "Globals cannot contain scalable vectors", &GV);
 
-  if (auto *STy = dyn_cast<StructType>(GV.getValueType()))
-    Check(!STy->containsScalableVectorType(),
+  if (auto *STy = dyn_cast<StructType>(GV.getValueType())) {
+    SmallPtrSet<Type *, 4> Visited;
+    Check(!STy->containsScalableVectorType(&Visited),
           "Globals cannot contain scalable vectors", &GV);
+  }
 
   // Check if it's a target extension type that disallows being used as a
   // global.
@@ -3836,6 +3838,14 @@ void Verifier::visitGetElementPtrInst(GetElementPtrInst &GEP) {
         "GEP base pointer is not a vector or a vector of pointers", &GEP);
   Check(GEP.getSourceElementType()->isSized(), "GEP into unsized type!", &GEP);
 
+  if (auto *STy = dyn_cast<StructType>(GEP.getSourceElementType())) {
+    SmallPtrSet<Type *, 4> Visited;
+    Check(!STy->containsScalableVectorType(&Visited),
+          "getelementptr cannot target structure that contains scalable vector"
+          "type",
+          &GEP);
+  }
+
   SmallVector<Value *, 16> Idxs(GEP.indices());
   Check(
       all_of(Idxs, [](Value *V) { return V->getType()->isIntOrIntVectorTy(); }),
@@ -5459,6 +5469,12 @@ void Verifier::visitIntrinsicCall(Intrinsic::ID ID, CallBase &Call) {
           Call);
     break;
   }
+  case Intrinsic::experimental_get_vector_length: {
+    ConstantInt *VF = cast<ConstantInt>(Call.getArgOperand(1));
+    Check(!VF->isNegative() && !VF->isZero(),
+          "get_vector_length: VF must be positive", Call);
+    break;
+  }
   case Intrinsic::masked_load: {
     Check(Call.getType()->isVectorTy(), "masked_load: must return a vector",
           Call);
@@ -6339,7 +6355,17 @@ void Verifier::verifyNotEntryValue(const DbgVariableIntrinsic &I) {
   if (!E || !E->isValid())
     return;
 
-  CheckDI(!E->isEntryValue(), "Entry values are only allowed in MIR", &I);
+  // We allow EntryValues for swift async arguments, as they have an
+  // ABI-guarantee to be turned into a specific register.
+  if (isa<ValueAsMetadata>(I.getRawLocation()))
+    if (auto *ArgLoc = dyn_cast_or_null<Argument>(I.getVariableLocationOp(0));
+        ArgLoc && ArgLoc->hasAttribute(Attribute::SwiftAsync))
+      return;
+
+  CheckDI(!E->isEntryValue(),
+          "Entry values are only allowed in MIR unless they target a "
+          "swiftasync Argument",
+          &I);
 }
 
 void Verifier::verifyCompileUnits() {

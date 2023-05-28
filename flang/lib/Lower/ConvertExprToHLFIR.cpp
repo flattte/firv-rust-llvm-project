@@ -594,8 +594,17 @@ private:
     llvm::SmallVector<mlir::Value> extents;
     auto seqTy = hlfir::getFortranElementOrSequenceType(fieldType)
                      .cast<fir::SequenceType>();
-    for (auto extent : seqTy.getShape())
+    for (auto extent : seqTy.getShape()) {
+      if (extent == fir::SequenceType::getUnknownExtent()) {
+        // We have already generated invalid hlfir.declare
+        // without the type parameters and probably invalid storage
+        // for the variable (e.g. fir.alloca without type parameters).
+        // So this TODO here is a little bit late, but it matches
+        // the non-HLFIR path.
+        TODO(loc, "array component shape depending on length parameters");
+      }
       extents.push_back(builder.createIntegerConstant(loc, idxTy, extent));
+    }
     if (!hasNonDefaultLowerBounds(componentSym))
       return builder.create<fir::ShapeOp>(loc, extents);
 
@@ -641,6 +650,31 @@ private:
              "Fortran designators can only have one ranked part");
       return changeElementType(baseType, componentBaseType);
     }
+
+    if (partInfo.complexPart && partInfo.componentShape) {
+      // Treat ...array_comp%im/re as ...array_comp(:,:,...)%im/re
+      // so that the codegen has the full slice triples for the component
+      // readily available.
+      fir::FirOpBuilder &builder = getBuilder();
+      mlir::Type idxTy = builder.getIndexType();
+      mlir::Value one = builder.createIntegerConstant(loc, idxTy, 1);
+
+      llvm::SmallVector<mlir::Value> resultExtents;
+      // Collect <lb, ub> pairs from the component shape.
+      auto bounds = hlfir::genBounds(loc, builder, partInfo.componentShape);
+      for (auto &boundPair : bounds) {
+        // The default subscripts are <lb, ub, 1>:
+        partInfo.subscripts.emplace_back(hlfir::DesignateOp::Triplet{
+            boundPair.first, boundPair.second, one});
+        auto extentValue = builder.genExtentFromTriplet(
+            loc, boundPair.first, boundPair.second, one, idxTy);
+        resultExtents.push_back(extentValue);
+      }
+      // The result shape is: <max((ub - lb + 1) / 1, 0), ...>.
+      partInfo.resultShape = builder.genShape(loc, resultExtents);
+      return componentBaseType;
+    }
+
     // scalar%array_comp or scalar%scalar. In any case the shape of this
     // part-ref is coming from the component.
     partInfo.resultShape = partInfo.componentShape;
@@ -948,7 +982,22 @@ GENBIN(Multiply, Real, mlir::arith::MulFOp)
 GENBIN(Multiply, Complex, fir::MulcOp)
 GENBIN(Divide, Integer, mlir::arith::DivSIOp)
 GENBIN(Divide, Real, mlir::arith::DivFOp)
-GENBIN(Divide, Complex, fir::DivcOp)
+
+template <int KIND>
+struct BinaryOp<Fortran::evaluate::Divide<
+    Fortran::evaluate::Type<Fortran::common::TypeCategory::Complex, KIND>>> {
+  using Op = Fortran::evaluate::Divide<
+      Fortran::evaluate::Type<Fortran::common::TypeCategory::Complex, KIND>>;
+  static hlfir::EntityWithAttributes gen(mlir::Location loc,
+                                         fir::FirOpBuilder &builder, const Op &,
+                                         hlfir::Entity lhs, hlfir::Entity rhs) {
+    mlir::Type ty = Fortran::lower::getFIRType(
+        builder.getContext(), Fortran::common::TypeCategory::Complex, KIND,
+        /*params=*/std::nullopt);
+    return hlfir::EntityWithAttributes{
+        fir::genDivC(builder, loc, ty, lhs, rhs)};
+  }
+};
 
 template <Fortran::common::TypeCategory TC, int KIND>
 struct BinaryOp<Fortran::evaluate::Power<Fortran::evaluate::Type<TC, KIND>>> {
@@ -1359,7 +1408,7 @@ public:
 private:
   hlfir::EntityWithAttributes
   gen(const Fortran::evaluate::BOZLiteralConstant &expr) {
-    fir::emitFatalError(loc, "BOZ literal must be replaced by semantics");
+    TODO(getLoc(), "BOZ");
   }
 
   hlfir::EntityWithAttributes gen(const Fortran::evaluate::NullPointer &expr) {
