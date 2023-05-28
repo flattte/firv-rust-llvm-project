@@ -1,3 +1,8 @@
+Firv Readme
+===
+
+Latest llvm upstream commit: `f225471c68881d31835a06c6b2f2b40bdaa287d5`
+
 Configure:
 ```
 cmake -S llvm -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLLVM_TARGETS_TO_BUILD="RISCV;X86"

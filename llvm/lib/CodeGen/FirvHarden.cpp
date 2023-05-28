@@ -4,9 +4,15 @@
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/IR/Attributes.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Type.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 
-#include <iostream>
+#include <vector>
 
 using namespace llvm;
 
@@ -27,11 +33,153 @@ FirvHarden::FirvHarden() : FunctionPass(ID) {
 
 FunctionPass *llvm::createFirvHardenPass() { return new FirvHarden(); }
 
-bool FirvHarden::runOnFunction(Function &Fn) {
-    if (Fn.hasFnAttribute(Attribute::FirvHarden)) {
-        std::cout << "FIRV HARDEN" << std::endl;
-        // Fn.print(std::cout);
+bool CreateFirvPrologue(
+    Function &Fn,
+    AllocaInst *&FirvAI1,
+    AllocaInst *&FirvAI2
+) {
+    IRBuilder<> B(&Fn.getEntryBlock().front());
+    Type *RetType = Fn.getReturnType();
+
+    FirvAI1 = B.CreateAlloca(RetType, nullptr, "FirvSlot1");
+    FirvAI2 = B.CreateAlloca(RetType, nullptr, "FirvSlot2");
+
+    return true;
+}
+
+BasicBlock* CreateFailBB(Function &Fn) {
+    LLVMContext &Context = Fn.getContext();
+    BasicBlock *FailBB = BasicBlock::Create(Context, "FirvFailBB", &Fn);
+    IRBuilder<> B(FailBB);
+
+    B.CreateAlloca(Type::getInt32Ty(Context), nullptr, "Lalalala");
+
+    return FailBB;
+}
+
+bool isHardeningSupportedForType(Type *Ty) {
+    switch (Ty->getTypeID()) {
+        case Type::IntegerTyID:
+        case Type::FloatTyID:
+        case Type::DoubleTyID:
+            return true;
+        // case Type::StructTyID:
+        //     outs() << "Support for struct types (" << *Ty << ") is limited. \n";
+        //     return true;
+        default:
+            return false;
+    }
+}
+
+Instruction* AddSlotComparison(IRBuilder<> &B, Type *Type, Value *V1, Value *V2) {
+    switch (Type->getTypeID()) {
+        case Type::IntegerTyID:
+            return cast<ICmpInst>(B.CreateICmpNE(V1, V2, "neq.i"));
+        case Type::FloatTyID:
+        case Type::DoubleTyID:
+            return cast<FCmpInst>(B.CreateFCmpONE(V1, V2, "neq.f"));
+        default:
+            return nullptr;
+    }
+}
+
+BasicBlock* CreateReturnBB(
+    Function &Fn,
+    Value* V
+) {
+    LLVMContext &Context = Fn.getContext();
+    BasicBlock *ReturnBB = BasicBlock::Create(Context, "ReturnBB", &Fn);
+    IRBuilder<> B(ReturnBB);
+
+    B.CreateRet(V);
+
+    return ReturnBB;
+}
+
+BasicBlock* CreateFirvEpilogue(
+    Function &Fn,
+    AllocaInst *&FirvAI1,
+    AllocaInst *&FirvAI2
+) {
+    LLVMContext &Context = Fn.getContext();
+    auto RetType = Fn.getReturnType();
+    BasicBlock *EpilogueBB = BasicBlock::Create(Context, "FirvEpilogue", &Fn);
+    IRBuilder<> B(EpilogueBB);
+
+    BasicBlock *FailBB = CreateFailBB(Fn);
+    auto V1 = B.CreateLoad(RetType, dyn_cast<Value>(FirvAI1), "ai1");
+    auto V2 = B.CreateLoad(RetType, dyn_cast<Value>(FirvAI2), "ai2");
+
+    auto Cmp = AddSlotComparison(B, RetType, V1, V2);
+
+    if (!Cmp) {
+        errs() << "Cannot create comparison for the " << *RetType << " type.\n";
+
+        return nullptr;
     }
 
-    return false;
+    BasicBlock* ReturnBB = CreateReturnBB(Fn, V1);
+
+    B.CreateCondBr(Cmp, ReturnBB, FailBB);
+
+    return EpilogueBB;
+}
+
+std::vector<BasicBlock*> CloneBasicBlocks(Function &Fn) {
+    std::vector<BasicBlock*> BlocksToClone;
+    
+
+    for (BasicBlock &BB : Fn) {
+        BlocksToClone.push_back(&BB);
+    }
+
+    std::vector<BasicBlock*> ClonedBlocks;
+    ValueToValueMapTy VMap;
+
+    for (const BasicBlock* BB : BlocksToClone) {
+        auto Clone = CloneBasicBlock(BB, VMap, ".cl", &Fn);
+        ClonedBlocks.push_back(Clone);
+    }
+
+    for (const BasicBlock* BB : ClonedBlocks) {
+        const auto I = BB->getTerminator();
+
+        outs() << I << "\n";
+    } 
+
+    return ClonedBlocks;
+}
+
+bool FirvHarden::runOnFunction(Function &Fn) {
+    if (!Fn.hasFnAttribute(Attribute::FirvHarden)) {
+        return false;
+    }
+
+    outs() << "FIRV HARDEN\n";
+
+    auto clones = CloneBasicBlocks(Fn);
+
+    Type *RetType = Fn.getReturnType();
+
+    if (!isHardeningSupportedForType(RetType)) {
+        errs() << "Firv Hardening is not supported for type " << *RetType << "\n"; 
+
+        return false;
+    }
+
+    AllocaInst *FirvAI1 = nullptr;
+    AllocaInst *FirvAI2 = nullptr;
+
+    CreateFirvPrologue(Fn, FirvAI1, FirvAI2);
+    BasicBlock *EpilogueBB = CreateFirvEpilogue(Fn, FirvAI1, FirvAI2);
+
+    if (!EpilogueBB) {
+        return false;
+    }
+
+
+    
+    Fn.print(outs());
+
+    return true;
 }
