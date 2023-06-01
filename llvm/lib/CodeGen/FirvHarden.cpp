@@ -13,6 +13,7 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 
 #include <vector>
+#include <map>
 
 using namespace llvm;
 
@@ -33,18 +34,20 @@ FirvHarden::FirvHarden() : FunctionPass(ID) {
 
 FunctionPass *llvm::createFirvHardenPass() { return new FirvHarden(); }
 
-bool CreateFirvPrologue(
+BasicBlock *CreateFirvPrologue(
     Function &Fn,
     AllocaInst *&FirvAI1,
     AllocaInst *&FirvAI2
 ) {
-    IRBuilder<> B(&Fn.getEntryBlock().front());
+    BasicBlock *NewBB = Fn.getEntryBlock()
+        .splitBasicBlockBefore(&Fn.getEntryBlock().front(), "FirvPrologue");
+    IRBuilder<> B(&NewBB->front());
     Type *RetType = Fn.getReturnType();
 
     FirvAI1 = B.CreateAlloca(RetType, nullptr, "FirvSlot1");
     FirvAI2 = B.CreateAlloca(RetType, nullptr, "FirvSlot2");
 
-    return true;
+    return NewBB;
 }
 
 BasicBlock* CreateFailBB(Function &Fn) {
@@ -120,34 +123,67 @@ BasicBlock* CreateFirvEpilogue(
 
     BasicBlock* ReturnBB = CreateReturnBB(Fn, V1);
 
-    B.CreateCondBr(Cmp, ReturnBB, FailBB);
+    B.CreateCondBr(Cmp, FailBB, ReturnBB);
 
     return EpilogueBB;
 }
 
-std::vector<BasicBlock*> CloneBasicBlocks(Function &Fn) {
-    std::vector<BasicBlock*> BlocksToClone;
-    
 
+using BlockMapping = std::map<const BasicBlock*, BasicBlock*>;
+
+void ReplaceSuccesor(BranchInst* Br, BlockMapping CloneMapping, unsigned int id) {
+    const auto succ = Br->getSuccessor(id);
+    const auto map = CloneMapping.find(succ);
+
+    if(map == CloneMapping.end()) {
+        errs() << "Missing mapping for BasicBlock" <<
+            succ->getName() << "\n";
+        
+        return;
+    }
+
+    const auto newSucc = map->second;
+
+    Br->setSuccessor(id, newSucc);
+}
+
+void ReplaceSuccessors(BranchInst* Br, BlockMapping CloneMapping) {
+    ReplaceSuccesor(Br, CloneMapping, 0);
+
+    if (Br->isUnconditional()) return;
+
+    ReplaceSuccesor(Br, CloneMapping, 1);
+}
+
+void CloneBasicBlocks(Function &Fn,
+    std::vector<BasicBlock*> &OriginalBBs,
+    std::vector<BasicBlock*> &ClonedBBs
+) {
     for (BasicBlock &BB : Fn) {
-        BlocksToClone.push_back(&BB);
+        OriginalBBs.push_back(&BB);
     }
 
-    std::vector<BasicBlock*> ClonedBlocks;
     ValueToValueMapTy VMap;
+    BlockMapping CloneMapping;
 
-    for (const BasicBlock* BB : BlocksToClone) {
+    for (const BasicBlock* BB : OriginalBBs) {
         auto Clone = CloneBasicBlock(BB, VMap, ".cl", &Fn);
-        ClonedBlocks.push_back(Clone);
+        ClonedBBs.push_back(Clone);
+
+        CloneMapping[BB] = Clone;
     }
 
-    for (const BasicBlock* BB : ClonedBlocks) {
-        const auto I = BB->getTerminator();
+    for (BasicBlock* ClonedBlock : ClonedBBs) {
+        for (Instruction &I : *ClonedBlock) {
+            RemapInstruction(&I, VMap, RF_IgnoreMissingLocals);
 
-        outs() << I << "\n";
-    } 
-
-    return ClonedBlocks;
+            if (isa<BranchInst>(I) ) {
+                BranchInst* Br = dyn_cast<BranchInst>(&I);
+                
+                ReplaceSuccessors(Br, CloneMapping);
+            }
+        }
+    }
 }
 
 bool FirvHarden::runOnFunction(Function &Fn) {
@@ -157,7 +193,9 @@ bool FirvHarden::runOnFunction(Function &Fn) {
 
     outs() << "FIRV HARDEN\n";
 
-    auto clones = CloneBasicBlocks(Fn);
+    std::vector<BasicBlock*> OriginalBBs;
+    std::vector<BasicBlock*> ClonedBBs;
+    CloneBasicBlocks(Fn, OriginalBBs, ClonedBBs);
 
     Type *RetType = Fn.getReturnType();
 
@@ -171,7 +209,7 @@ bool FirvHarden::runOnFunction(Function &Fn) {
     AllocaInst *FirvAI2 = nullptr;
 
     CreateFirvPrologue(Fn, FirvAI1, FirvAI2);
-    BasicBlock *EpilogueBB = CreateFirvEpilogue(Fn, FirvAI1, FirvAI2);
+    auto EpilogueBB = CreateFirvEpilogue(Fn, FirvAI1, FirvAI2);
 
     if (!EpilogueBB) {
         return false;
