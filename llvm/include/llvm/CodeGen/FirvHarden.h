@@ -14,6 +14,8 @@ public:
   FirvHarden();
 
   bool runOnFunction(Function &Fn) override;
+
+  void getAnalysisUsage(AnalysisUsage &AU) const override;
 };
 
 

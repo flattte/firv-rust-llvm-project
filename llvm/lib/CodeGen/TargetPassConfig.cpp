@@ -919,6 +919,9 @@ void TargetPassConfig::addIRPasses() {
   // Convert conditional moves to conditional jumps when profitable.
   if (getOptLevel() != CodeGenOpt::None && !DisableSelectOptimize)
     addPass(createSelectOptimizePass());
+  
+  // Add Firv Hardening pass
+  addPass(createFirvHardenPass());
 }
 
 /// Turn exception handling constructs into something the code generators can
@@ -1277,8 +1280,6 @@ void TargetPassConfig::addMachinePasses() {
     addPass(createCFIFixup());
 
   PM->add(createStackFrameLayoutAnalysisPass());
-
-  addPass(createFirvHardenPass());
 
   // Add passes that directly emit MI after all other MI passes.
   addPreEmitPass2();
