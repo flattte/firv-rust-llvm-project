@@ -64,6 +64,7 @@ BasicBlock* CreateFailBB(Function &Fn) {
     BasicBlock *FailBB = BasicBlock::Create(Context, "FirvFailBB", &Fn);
     IRBuilder<> B(FailBB);
 
+    B.CreateCall(Intrinsic::getDeclaration(Fn.getParent(), Intrinsic::trap));
     B.CreateUnreachable();
 
     return FailBB;
