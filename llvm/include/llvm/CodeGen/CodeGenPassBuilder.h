@@ -650,8 +650,8 @@ void CodeGenPassBuilder<Derived>::addIRPasses(AddIRPass &addPass) const {
   // Convert conditional moves to conditional jumps when profitable.
   if (getOptLevel() != CodeGenOpt::None && !Opt.DisableSelectOptimize)
     addPass(SelectOptimizePass());
-
-    // Add Firv Hardening pass
+  
+  // Add Firv Hardening pass
   addPass(FirvHardenPass());
 }
 
