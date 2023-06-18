@@ -650,9 +650,6 @@ void CodeGenPassBuilder<Derived>::addIRPasses(AddIRPass &addPass) const {
   // Convert conditional moves to conditional jumps when profitable.
   if (getOptLevel() != CodeGenOpt::None && !Opt.DisableSelectOptimize)
     addPass(SelectOptimizePass());
-  
-  // Add Firv Hardening pass
-  addPass(FirvHardenPass());
 }
 
 /// Turn exception handling constructs into something the code generators can
@@ -716,6 +713,9 @@ void CodeGenPassBuilder<Derived>::addCodeGenPrepare(AddIRPass &addPass) const {
 template <typename Derived>
 void CodeGenPassBuilder<Derived>::addISelPrepare(AddIRPass &addPass) const {
   derived().addPreISel(addPass);
+
+  // Add Firv Hardening pass
+  addPass(FirvHardenPass());
 
   addPass(CallBrPrepare());
   // Add both the safe stack and the stack protection passes: each of them will

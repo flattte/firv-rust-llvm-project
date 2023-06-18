@@ -920,8 +920,6 @@ void TargetPassConfig::addIRPasses() {
   if (getOptLevel() != CodeGenOpt::None && !DisableSelectOptimize)
     addPass(createSelectOptimizePass());
   
-  // Add Firv Hardening pass
-  addPass(createFirvHardenPass());
 }
 
 /// Turn exception handling constructs into something the code generators can
@@ -979,6 +977,9 @@ void TargetPassConfig::addCodeGenPrepare() {
 /// instruction selection.
 void TargetPassConfig::addISelPrepare() {
   addPreISel();
+
+  // Add Firv Hardening pass
+  addPass(createFirvHardenPass());
 
   // Force codegen to run according to the callgraph.
   if (requiresCodeGenSCCOrder())
