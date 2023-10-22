@@ -10,6 +10,7 @@
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -61,7 +62,7 @@ BasicBlock *CreateFirvPrologue(
 
 BasicBlock* CreateFailBB(Function &Fn) {
     LLVMContext &Context = Fn.getContext();
-    BasicBlock *FailBB = BasicBlock::Create(Context, "FirvFailBB", &Fn);
+    BasicBlock *FailBB = BasicBlock::Create(Context, "FailBB", &Fn);
     IRBuilder<> B(FailBB);
 
     B.CreateCall(Intrinsic::getDeclaration(Fn.getParent(), Intrinsic::trap));
@@ -104,26 +105,26 @@ BasicBlock* CreateReturnBB(
     IRBuilder<> B(ReturnBB);
 
     auto V1 = B.CreateLoad(RetType, Slot1, true,"RetVal1");
-    auto V2 = B.CreateLoad(RetType, Slot2, true,"RetVal1");
+    B.CreateLoad(RetType, Slot2, true,"RetVal1");
     
-    auto Cmp = AddSlotComparison(B, RetType, Slot1, Slot2);
-    auto V = B.CreateSelect(Cmp, V1, V2);
-    B.CreateRet(V);
+    B.CreateRet(V1);
 
     return ReturnBB;
 }
 
-BasicBlock* CreateFirvEpilogue(
+BasicBlock* CreateSlotCheck(
     Function &Fn,
     AllocaInst *&FirvAI1,
     AllocaInst *&FirvAI2,
-    BasicBlock* FailBB,
-    BasicBlock* ReturnBB
+    BasicBlock *ThisBB,
+    BasicBlock *NextBB
 ) {
     LLVMContext &Context = Fn.getContext();
     auto RetType = Fn.getReturnType();
-    BasicBlock *EpilogueBB = BasicBlock::Create(Context, "FirvEpilogue", &Fn);
-    IRBuilder<> B(EpilogueBB);
+
+    IRBuilder<> B(ThisBB);
+
+    MDBuilder MDB(Context);
 
     auto V1 = B.CreateLoad(RetType, dyn_cast<Value>(FirvAI1), true, "ai1");
     auto V2 = B.CreateLoad(RetType, dyn_cast<Value>(FirvAI2), true, "ai2");
@@ -136,7 +137,26 @@ BasicBlock* CreateFirvEpilogue(
         return nullptr;
     }
 
-    B.CreateCondBr(Cmp, FailBB, ReturnBB);
+    BasicBlock *FailBB = CreateFailBB(Fn);
+
+    B.CreateCondBr(Cmp, FailBB, NextBB, MDB.createBranchWeights(9999, 1));
+
+    return ThisBB;
+}
+
+BasicBlock* CreateFirvEpilogue(
+    Function &Fn,
+    AllocaInst *&FirvAI1,
+    AllocaInst *&FirvAI2,
+    BasicBlock* ReturnBB
+) {
+    LLVMContext &Context = Fn.getContext();
+
+    BasicBlock *EpilogueBB = BasicBlock::Create(Context, "FirvEpilogue.1", &Fn);
+    BasicBlock *Epilogue2BB = BasicBlock::Create(Context, "FirvEpilogue.2", &Fn);
+
+    CreateSlotCheck(Fn, FirvAI1, FirvAI2, EpilogueBB, Epilogue2BB);
+    CreateSlotCheck(Fn, FirvAI1, FirvAI2, Epilogue2BB, ReturnBB);
 
     return EpilogueBB;
 }
@@ -276,16 +296,15 @@ bool FirvHarden::runOnFunction(Function &Fn) {
     AllocaInst *FirvAI2 = nullptr;
     CreateFirvPrologue(Fn, FirvAI1, FirvAI2);
     
-    BasicBlock *FailBB = CreateFailBB(Fn);
     BasicBlock *ReturnBB = CreateReturnBB(Fn, FirvAI1, FirvAI2);
 
-    auto EpilogueBB = CreateFirvEpilogue(Fn, FirvAI1, FirvAI2, FailBB, ReturnBB);
+    auto InterludeBB = CreateFirvInterlude(Fn, ClonedBBs);
+
+    auto EpilogueBB = CreateFirvEpilogue(Fn, FirvAI1, FirvAI2, ReturnBB);
 
     if (!EpilogueBB) {
         return false;
     }
-
-    auto InterludeBB = CreateFirvInterlude(Fn, ClonedBBs);
 
     ReplaceReturns(OriginalBBs, FirvAI1, InterludeBB);
     ReplaceReturns(ClonedBBs, FirvAI2, EpilogueBB);
